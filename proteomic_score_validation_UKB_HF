@@ -1,0 +1,789 @@
+#######################################################################################################################
+# External validation of the ProteomicDeath23 score in UK Biobank
+#######################################################################################################################
+
+# Standardize the ProteomicDeath23 to mean 0 and 1 SD
+library(dplyr)
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(Proteoscore23_z = scale(Proteoscore23))
+
+# Standardize the NTproBNP to mean 0 and 1 SD
+library(dplyr)
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(NTproBNP_z = scale(Protein_NTproBNP))
+
+# Standardize the TNNI3 to mean 0 and 1 SD
+library(dplyr)
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(Troponin_z = scale(TNNI3))
+
+# 1) Observed mortality rates across quintiles of ProteomicDeath23_z 
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+library(forcats)
+
+# Generate deciles of score
+validation_proteomic_UKB  <- validation_proteomic_UKB  %>%
+  mutate(
+    Proteoscore23_quintile = ntile(Proteoscore23_z, 5))
+
+# Summarize MI events per decile
+quintile_summary <- validation_proteomic_UKB  %>%
+  group_by(quintile = Proteoscore23_quintile) %>%
+  summarise(
+    total_patients = n(),
+    events = sum(DEATH, na.rm = TRUE),
+    event_rate = events / total_patients,
+    event_percentage = 100 * event_rate,
+    se = sqrt((event_rate * (1 - event_rate)) / total_patients),
+    ci_lower = pmax(0, 100 * (event_rate - 1.96 * se)),
+    ci_upper = pmin(100, 100 * (event_rate + 1.96 * se)),
+    .groups = "drop"
+  )
+
+# Convert decile to factor for discrete color scale
+quintile_summary$quintile <- factor(quintile_summary$quintile)
+
+# Plot black
+quintile_plot <- ggplot(quintile_summary, aes(x = quintile, y = event_percentage, group = 1)) +
+  geom_point(size = 4, color = "black") +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), 
+                width = 0.2, color = "black") +
+  labs(
+    x = expression("ProteomicDeath23 quintiles"),
+    y = "Observed death rate (%)"
+  ) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 10)) +
+  theme_classic() +
+  theme(
+    axis.title       = element_text(size = 15),
+    axis.text        = element_text(size = 15),
+    axis.ticks.x     = element_line(),
+    strip.text       = element_text(size = 15),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position  = "none"
+  )
+
+# Calculate and plot the percentiles of the ProteomicDeath23 score across outcomes
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+library(forcats)
+
+# 1. Generate quintiles for both scores
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    ProteomicDeath23_quintile = ntile(Proteoscore23_z, 5),
+    NTproBNP_quintile         = ntile(NTproBNP_z, 5)
+  )
+
+# 2. Define outcome labels
+outcomes <- c(
+  "I_hf"        = "HF hospitalization",
+  "DEATH"       = "All-cause mortality",
+  "DEATH_CVD"   = "CV mortality",
+  "DEATH_OTHER" = "Non-CV mortality"
+)
+
+# 3. Define mapping from score names to quintile columns
+score_info <- list(
+  ProteomicDeath23 = "ProteomicDeath23_quintile",
+  `NT-proBNP`      = "NTproBNP_quintile"
+)
+
+# 4. Build long-format summary data with 95% CIs
+long_data <- map_dfr(names(outcomes), function(outcome_var) {
+  map_dfr(names(score_info), function(score_name) {
+    quintile_col <- score_info[[score_name]]
+    
+    validation_proteomic_UKB %>%
+      group_by(quintile = .data[[quintile_col]]) %>%
+      summarise(
+        total_patients = n(),
+        events = sum(.data[[outcome_var]], na.rm = TRUE),
+        event_percentage = (events / total_patients) * 100,
+        # Wald 95% CI for proportions
+        se = sqrt((event_percentage / 100) * (1 - (event_percentage / 100)) / total_patients),
+        lower_ci = pmax(0, (event_percentage / 100 - 1.96 * se) * 100),
+        upper_ci = pmin(100, (event_percentage / 100 + 1.96 * se) * 100),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Score   = score_name,
+        Outcome = outcomes[[outcome_var]]
+      )
+  })
+})
+
+# 5. Clean up factor levels
+long_data <- long_data %>%
+  filter(!is.na(quintile)) %>%
+  mutate(
+    Outcome = factor(Outcome, levels = outcomes)
+  )
+
+# 6. Create plot with error bars for 95% CIs
+quintile_plot <- ggplot(long_data, aes(x = factor(quintile), y = event_percentage, color = Score)) +
+  geom_point(size = 3.5, position = position_dodge(width = 0.5)) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    width = 0.2,
+    position = position_dodge(width = 0.5)
+  ) +
+  facet_wrap(~ Outcome, nrow = 2) +
+  labs(
+    x = "Quintile",
+    y = "Observed event rate (%)",
+    color = "Variable"
+  ) +
+  scale_color_manual(values = c(
+    "ProteomicDeath23" = "#56B4E9",
+    "NT-proBNP"        = "#009E73"
+  )) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 20)) +
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 15),
+    axis.text.y = element_text(size = 15),
+    axis.text.x = element_text(size = 15),
+    axis.ticks.x = element_line(),
+    strip.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 12),
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# 2) Association between ProteomicDeath23 per SD and outcomes 
+
+validation_proteomic_UKB$ethnicity <- as.factor(validation_proteomic_UKB$ethnicity)
+
+library(survival)
+
+cox_model1 <- coxph(Surv(follow_up_time_HF, I_hf) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Troponin_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model2 <- coxph(Surv(follow_up_time_HF, I_hf) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model3 <- coxph(Surv(follow_up_time_HF, I_hf) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Proteoscore23_z + strata(ethnicity), data = validation_proteomic_UKB)
+
+cox_model1 <- coxph(Surv(follow_up_time_all_cause_mortality, DEATH) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Troponin_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model2 <- coxph(Surv(follow_up_time_all_cause_mortality, DEATH) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model3 <- coxph(Surv(follow_up_time_all_cause_mortality, DEATH) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Proteoscore23_z + strata(ethnicity), data = validation_proteomic_UKB)
+
+cox_model1 <- coxph(Surv(follow_up_time_cvd_mortality, DEATH_CVD) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Troponin_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model2 <- coxph(Surv(follow_up_time_cvd_mortality, DEATH_CVD) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model3 <- coxph(Surv(follow_up_time_cvd_mortality, DEATH_CVD) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Proteoscore23_z + strata(ethnicity), data = validation_proteomic_UKB)
+
+cox_model1 <- coxph(Surv(follow_up_time_other_mortality, DEATH_OTHER) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Troponin_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model2 <- coxph(Surv(follow_up_time_other_mortality, DEATH_OTHER) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + strata(ethnicity), data = validation_proteomic_UKB)
+cox_model3 <- coxph(Surv(follow_up_time_other_mortality, DEATH_OTHER) ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + Proteoscore23_z + strata(ethnicity), data = validation_proteomic_UKB)
+
+# Calculate C-index
+library(ggplot2)
+library(dplyr)
+library(survival)
+library(boot)
+
+# Define outcomes and time variables
+outcomes <- c("I_hf", "DEATH", "DEATH_CVD", "DEATH_OTHER")
+times    <- c("follow_up_time_HF", "follow_up_time_all_cause_mortality", "follow_up_time_cvd_mortality", "follow_up_time_other_mortality")
+labels   <- c("HF hospitalization", "All-cause mortality", "CV mortality", "Non-CV mortality")
+
+outcomes <- c("evdth")
+times    <- c("ttdth")
+labels   <- c("All-cause mortality")
+
+# List of model formulas
+model_list <- list(
+  Clinical             = ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + strata(ethnicity),
+  Troponin             = ~ Age_assessment + Self_reported_sex  + Troponin_z,
+  NTproBNP             = ~ Age_assessment + Self_reported_sex  + NTproBNP_z,
+  Proteomic            = ~ Age_assessment + Self_reported_sex  + Proteoscore23_z,
+  Full_combined        = ~ Age_assessment + Self_reported_sex  + NTproBNP_z + Proteoscore23_z,
+  Full_with_RF         = ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + Proteoscore23_z + strata(ethnicity)
+)
+
+model_list <- list(
+  Clinical             = ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + strata(ethnicity),
+  NTproBNP             = ~ Age_assessment + Self_reported_sex  + NTproBNP_z,
+  Proteomic            = ~ Age_assessment + Self_reported_sex  + Proteoscore23_z,
+  Full_combined        = ~ Age_assessment + Self_reported_sex  + NTproBNP_z + Proteoscore23_z,
+  Full_with_RF         = ~ Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI + NTproBNP_z + Proteoscore23_z + strata(ethnicity)
+)
+
+# Function to calculate C-index and 95% CI
+compute_cindex <- function(surv_formula, model_formula, data) {
+  # Combine LHS (Surv) and RHS (model) parts using update()
+  full_formula <- update(surv_formula, model_formula)
+
+  # Fit Cox model
+  cox_model <- coxph(full_formula, data = data)
+
+  # Bootstrap C-index
+  cindex_func <- function(data, indices) {
+    boot_model <- coxph(full_formula, data = data[indices, ])
+    return(summary(boot_model)$concordance[1])
+  }
+
+  set.seed(123)
+  bootstrap_results <- boot(data = data, statistic = cindex_func, R = 1000)
+  ci <- tryCatch(boot.ci(bootstrap_results, type = "bca"), error = function(e) NULL)
+
+  # Return results
+  list(
+    model_name = deparse(model_formula),
+    cindex     = summary(cox_model)$concordance[1],
+    ci_low     = if (!is.null(ci)) ci$bca[4] else NA,
+    ci_up      = if (!is.null(ci)) ci$bca[5] else NA
+  )
+}
+
+# Loop through each outcome and model
+results <- list()
+
+for (i in seq_along(outcomes)) {
+  outcome <- outcomes[i]
+  time <- times[i]
+  label <- labels[i]
+
+  cat("\n\n################ ", label, " ################\n\n")
+
+  for (model_name in names(model_list)) {
+    cat("Model: ", model_name, "\n")
+
+    # Create Surv() object as LHS of formula
+    surv_formula <- as.formula(paste0("Surv(", time, ", ", outcome, ") ~ 1"))
+    rhs_formula <- model_list[[model_name]]
+
+    # Compute c-index
+    res <- compute_cindex(surv_formula, rhs_formula, data = validation_proteomic_UKB)
+
+    # Store result
+    results[[paste0(label, "_", model_name)]] <- c(
+      Outcome = label,
+      Model = model_name,
+      C_index = res$cindex,
+      Lower_CI = res$ci_low,
+      Upper_CI = res$ci_up
+    )
+  }
+}
+
+library(dplyr)
+library(tibble)
+
+# Convert list of results into a tidy data frame
+cindex_combined <- bind_rows(
+  lapply(results, function(x) {
+    df <- as.data.frame(x, stringsAsFactors = FALSE)
+    tibble(
+      Outcome = as.character(df["Outcome", 1]),
+      Variable = as.character(df["Model", 1]),
+      C_index = as.numeric(df["C_index.C", 1]),
+      Lower_CI = as.numeric(df["Lower_CI", 1]),
+      Upper_CI = as.numeric(df["Upper_CI", 1])
+    )
+  })
+)
+
+cindex_combined <- cindex_combined %>%
+  mutate(Variable = recode(Variable,
+    "Clinical"          = "Clinical",
+    "Troponin"          = "Troponin I",
+    "NTproBNP"          = "NT-proBNP",
+    "Proteomic"         = "ProteomicDeath23",
+    "Full_combined"     = "NT-proBNP + ProteomicDeath23",
+    "Full_with_RF"      = "Clinical + NT-proBNP + ProteomicDeath23"
+  ))
+
+# Set desired factor order for the 'Variable' column
+variable_levels <- c(
+  "Clinical",
+  "Troponin I",
+  "NT-proBNP",
+  "ProteomicDeath23",
+  "NT-proBNP + ProteomicDeath23",
+  "Clinical + NT-proBNP + ProteomicDeath23"
+)
+
+# Apply factor ordering
+cindex_combined <- cindex_combined %>%
+  mutate(Variable = factor(Variable, levels = variable_levels))
+
+# Optional: Factor ordering for outcome
+cindex_combined <- cindex_combined %>%
+  mutate(Outcome = factor(Outcome, levels = c(
+    "HF hospitalization",
+    "All-cause mortality",
+    "CV mortality",
+    "Non-CV mortality"
+  )))
+
+# Plot with facets, no x-axis labels, legend on the right
+library(ggsci)
+
+combined_plot <- ggplot(cindex_combined, aes(x = Variable, y = C_index, color = Variable)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0) +
+  facet_wrap(~ Outcome, scales = "free_x", nrow = 2) +
+  labs(x = "", y = "C-index (95% CI)", color = "Variable") +
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(size = 20),
+    legend.title = element_text(size = 20),
+    legend.text = element_text(size = 20),
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0.50, 0.90), breaks = seq(0.50, 0.90, 0.10)) +
+  scale_color_aaas() +
+  scale_fill_aaas()
+
+# Plot tertiles of ProteomicDeath23 and NT-proBNP
+library(dplyr)
+
+# ProteomicDeath25 and NT-proBNP tertiles
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    ProteomicDeath23_tertiles = ntile(Proteoscore23_z, 3) %>%
+      factor(labels = c("1", "2", "3")),
+    NTproBNP_tertiles = ntile(NTproBNP_z, 3) %>%
+      factor(labels = c("1", "2", "3"))
+  )
+
+# Create combined binary variable: 1 if both scores are in top tertile, else 0
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    Scores_toptertile = ifelse(
+      ProteomicDeath23_tertiles == "3" & NTproBNP_tertiles == "3", 1, 0
+    ),
+    Scores_toptertile = factor(
+      Scores_toptertile,
+      levels = c(0, 1),
+      labels = c("ProteomicDeath23 + NT-proBNP lower tertiles", "ProteomicDeath23 + NT-proBNP top tertiles")
+    )
+  )
+
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    Scores_tertile_combo = case_when(
+      ProteomicDeath23_tertiles == "3" & NTproBNP_tertiles == "3" ~ "ProteomicDeath23 + NT-proBNP top tertile",
+      ProteomicDeath23_tertiles == "1" & NTproBNP_tertiles == "1" ~ "ProteomicDeath23 + NT-proBNP bottom tertile",
+      TRUE ~ "Mixed tertiles"
+    ),
+    Scores_tertile_combo = factor(
+      Scores_tertile_combo,
+      levels = c(
+        "ProteomicDeath23 + NT-proBNP bottom tertile",
+        "Mixed tertiles",
+        "ProteomicDeath23 + NT-proBNP top tertile"
+      )
+    )
+  )
+
+var <- "ProteomicDeath23 + NT-proBNP"
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(stringr)
+library(broom)
+library(survival)
+library(survminer)
+
+# ==============================
+# Stratify patients by tertiles
+# ==============================
+
+cox_model <- coxph(Surv(follow_up_time_all_cause_mortality, DEATH) ~ Scores_tertile_combo + Age_assessment + Self_reported_sex + SBP + BMI + Creatinine + current_smoking_final + P_t2d + P_copd + event_Beta_blocker + event_ACEI, data = validation_proteomic_UKB)
+
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    ProteomicDeath23_tertiles = ntile(Proteoscore23_z, 3),
+    NTproBNP_tertiles = ntile(NTproBNP_z, 3),
+    Scores_tertile_combo = case_when(
+      ProteomicDeath23_tertiles == 3 & NTproBNP_tertiles == 3 ~ "Top tertiles",
+      ProteomicDeath23_tertiles == 1 & NTproBNP_tertiles == 1 ~ "Bottom tertiles (reference)",
+      TRUE ~ "Intermediate tertiles"
+    ),
+    Scores_tertile_combo = factor(
+      Scores_tertile_combo,
+      levels = c("Top tertiles", "Intermediate tertiles", "Bottom tertiles (reference)")
+    )
+  )
+
+# ======================
+# Compute KM estimates
+# ======================
+
+# Define outcome and time
+outcome_var <- "DEATH"
+time_var    <- "follow_up_time_all_cause_mortality"
+label       <- "All-cause mortality"
+
+# Fit survival model
+surv_obj <- Surv(validation_proteomic_UKB[[time_var]], validation_proteomic_UKB[[outcome_var]])
+fit <- survfit(surv_obj ~ Scores_tertile_combo, data = validation_proteomic_UKB)
+
+# Tidy output for plotting (convert time to years)
+km_df <- tidy(fit) %>%
+  mutate(
+    time = time,
+    outcome = label,
+    Scores_tertile_combo = str_remove(strata, "Scores_tertile_combo=")
+  ) %>%
+  select(time, estimate, conf.low, conf.high, Scores_tertile_combo, outcome)
+
+km_df <- tidy(fit, censored = TRUE) %>%
+  mutate(
+    time = time / 365.25,
+    outcome = label,
+    Scores_tertile_combo = str_remove(strata, "Scores_tertile_combo=")
+  ) %>%
+  select(time, estimate, conf.low, conf.high,
+         n.censor, n.risk, Scores_tertile_combo, outcome)
+
+# =====================
+# Log-rank p-value
+# =====================
+
+survdiff_fit <- survdiff(surv_obj ~ Scores_tertile_combo, data = validation_proteomic_UKB)
+p_val <- 1 - pchisq(survdiff_fit$chisq, length(survdiff_fit$n) - 1)
+
+logrank_pval <- tibble(
+  outcome = label,
+  pval = ifelse(p_val < 0.001, "p < 0.001", paste0("p = ", format(round(p_val, 3), nsmall = 3))),
+  x = 0,
+  y = 0.75
+)
+
+km_df$Scores_tertile_combo <- factor(
+  km_df$Scores_tertile_combo,
+  levels = c(
+    "Top tertiles",
+    "Intermediate tertiles",
+    "Bottom tertiles (reference)"
+  )
+)
+
+validation_proteomic_UKB$Scores_tertile_combo <- factor(
+  validation_proteomic_UKB$Scores_tertile_combo,
+  levels = c(
+    "Bottom tertiles (reference)",
+    "Intermediate tertiles",
+    "Top tertiles"
+  )
+)
+
+# ============ Plot results ============
+library("ggsci")
+
+# Kaplan–Meier fit
+km_fit <- survfit(Surv(follow_up_time_all_cause_mortality, DEATH) ~ Scores_tertile_combo, data = validation_proteomic_UKB)
+
+km_plot <- ggsurvplot(
+  km_fit,
+  data = validation_proteomic_UKB,
+  fun = "event",              
+  risk.table = TRUE,              
+  conf.int = FALSE,
+  censor = TRUE,                
+  palette = pal_npg("nrc")(3),    
+  legend = "none",              
+  xlab = "Time (Years)",
+  ylab = "Cumulative incidence (%)",
+  break.time.by = 1,
+  xlim = c(0, 16),
+  surv.scale = "percent",
+  ggtheme = theme_classic() +
+    theme(
+      axis.title.x     = element_text(size = 20),
+      axis.title.y     = element_text(size = 20),
+      axis.text.x      = element_text(size = 20),
+      axis.text.y      = element_text(size = 20),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position  = "none"   
+    )
+)
+
+# Adjust axes (no legend modifications)
+km_plot$plot <- km_plot$plot +
+  scale_x_continuous(breaks = seq(0, 16, by = 2)) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    breaks = seq(0, 1, by = 0.2)
+  ) +
+  theme(legend.position = "none") 
+
+###### Figure Supplement ######
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(stringr)
+library(broom)
+library(survival)
+
+# =======================================
+# Prepare data
+# =======================================
+validation_proteomic_UKB <- validation_proteomic_UKB %>%
+  mutate(
+    ProteomicDeath23_tertiles = ntile(Proteoscore23_z, 3),
+    NTproBNP_tertiles = ntile(NTproBNP_z, 3),
+    Scores_tertile_combo = case_when(
+      ProteomicDeath23_tertiles == 3 & NTproBNP_tertiles == 3 ~ "Top tertiles",
+      ProteomicDeath23_tertiles == 1 & NTproBNP_tertiles == 1 ~ "Bottom tertiles",
+      TRUE ~ "Intermediate tertiles"
+    ),
+    Scores_tertile_combo = factor(
+      Scores_tertile_combo,
+      levels = c("Bottom tertiles", "Intermediate tertiles", "Top tertiles")
+    )
+  )
+
+# =======================================
+# Define outcomes
+# =======================================
+outcomes <- c("I_hf", "DEATH_CVD", "DEATH_OTHER")
+times    <- c("follow_up_time_HF", "follow_up_time_cvd_mortality", "follow_up_time_other_mortality")
+labels   <- c("HF hospitalization", "CV mortality", "Non-CV mortality")
+
+# =======================================
+# Generate KM data for all outcomes
+# =======================================
+km_data_list <- map2(outcomes, times, function(event, time_var) {
+  surv_obj <- Surv(validation_proteomic_UKB[[time_var]], validation_proteomic_UKB[[event]])
+  fit <- survfit(surv_obj ~ Scores_tertile_combo, data = validation_proteomic_UKB)
+  
+  broom::tidy(fit) %>%
+    mutate(
+      outcome = labels[match(event, outcomes)],
+      Scores_tertile_combo = stringr::str_remove(strata, "Scores_tertile_combo=")
+    )
+})
+
+km_df <- bind_rows(km_data_list)
+
+# Convert to cumulative incidence (%)
+km_df <- km_df %>%
+  mutate(
+    cum_incidence = (1 - estimate) * 100,
+    Scores_tertile_combo = factor(
+      Scores_tertile_combo,
+      levels = c("Bottom tertiles", "Intermediate tertiles", "Top tertiles")
+    )
+  )
+
+km_df <- km_df %>%
+  group_by(outcome, Scores_tertile_combo) %>%
+  arrange(time) %>%
+  # add time = 0 row if missing
+  mutate(
+    has_zero = any(time == 0)
+  ) %>%
+  { 
+    bind_rows(
+      .,
+      filter(., !has_zero) %>%
+        distinct(outcome, Scores_tertile_combo, .keep_all = TRUE) %>%
+        transmute(
+          time = 0,
+          cum_incidence = 0,
+          outcome,
+          Scores_tertile_combo
+        )
+    )
+  } %>%
+  ungroup() %>%
+  arrange(outcome, Scores_tertile_combo, time)
+
+# =======================================
+# Plot with facet_wrap (each starts at 0)
+# =======================================
+km_plot_faceted <- ggplot(km_df, aes(x = time, y = cum_incidence,
+                                     color = Scores_tertile_combo)) +
+  geom_line(size = 1.1) +
+  facet_wrap(~ outcome, ncol = 3, scales = "free_y") +
+  scale_color_npg() +
+  scale_fill_npg() +
+  labs(
+    x = "Time (Years)",
+    y = "Cumulative incidence (%)",
+    color = "",
+    fill = ""
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12)
+  )
+
+# DEATH
+# Step 1: Summarize incidence rates per 100 PY with 95% CI
+incidence_rates <- validation_proteomic_UKB %>%
+  group_by(Proteo_NTproBNP_tertiles) %>%
+  summarise(
+    events = sum(DEATH, na.rm = TRUE),
+    person_years = sum(follow_up_time_all_cause_mortality, na.rm = TRUE),
+    rate_per1py = events / person_years,
+    rate_per100py = rate_per1py * 100,
+    lower_CI = (qchisq(0.025, 2 * events) / 2) / person_years * 100,
+    upper_CI = (qchisq(0.975, 2 * (events + 1)) / 2) / person_years * 100,
+    .groups = "drop"
+  )
+
+# Step 2: Extract NTproBNP and ProteomicDeath tertiles for each Proteo_NTproBNP_tertiles
+tert_info <- validation_proteomic_UKB %>%
+  select(Proteo_NTproBNP_tertiles, NTproBNP_tertiles, ProteomicDeath23_tertiles) %>%
+  distinct()
+
+# Step 3: Join to incidence_rates
+incidence_rates <- incidence_rates %>%
+  left_join(tert_info, by = "Proteo_NTproBNP_tertiles")
+
+# Check the result
+incidence_rates
+
+library(ggplot2)
+library(ggsci)
+
+# Convert to factors for plotting
+incidence_rates <- incidence_rates %>%
+  mutate(
+    NTproBNP_tertiles = factor(NTproBNP_tertiles),
+    ProteomicDeath23_tertiles = factor(ProteomicDeath23_tertiles)
+  )
+
+# Small offset for text labels
+incidence_rates <- incidence_rates %>%
+  mutate(y_label = rate_per100py + 0.25)
+
+# Plot
+p <- ggplot(incidence_rates, aes(
+  x = NTproBNP_tertiles,
+  y = rate_per100py,
+  fill = ProteomicDeath23_tertiles,
+  group = ProteomicDeath23_tertiles
+)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  #geom_errorbar(
+    #aes(ymin = lower_CI, ymax = upper_CI),
+   # position = position_dodge(width = 0.75),
+   # width = 0.2
+  #) +
+  geom_text(
+    aes(y = y_label, label = sprintf("%.1f", rate_per100py)),
+    position = position_dodge(width = 0.75),
+    size = 5
+  ) +
+  scale_fill_npg(name = "ProteomicDeath23\ntertile") +
+  scale_y_continuous(
+    limits = c(0, 10), breaks = seq(0, 10, by = 2)) +
+  labs(
+    x = "NT-proBNP tertile",
+    y = "Incidence rate (per 100 PY)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    axis.text.x  = element_text(size = 20),
+    axis.text.y  = element_text(size = 20),
+    strip.text   = element_text(size = 20),
+    legend.position = "right",
+    legend.title = element_text(size = 20),
+    legend.text  = element_text(size = 20)
+  )
+
+# Outcomes and follow-up times
+outcomes <- c("I_hf", "DEATH_CVD", "DEATH_OTHER")
+times    <- c("follow_up_time_HF", 
+              "follow_up_time_cvd_mortality", "follow_up_time_other_mortality")
+
+# Initialize list to store incidence rates
+incidence_list <- list()
+
+for (i in seq_along(outcomes)) {
+  outcome_var <- outcomes[i]
+  time_var <- times[i]
+  
+  # Step 1: Calculate incidence rates per 100 PY with 95% CI
+  incidence_rates <- validation_proteomic_UKB %>%
+    group_by(Proteo_NTproBNP_tertiles) %>%
+    summarise(
+      events = sum(.data[[outcome_var]], na.rm = TRUE),
+      person_years = sum(.data[[time_var]], na.rm = TRUE),
+      rate_per1py = events / person_years,
+      rate_per100py = rate_per1py * 100,
+      lower_CI = (qchisq(0.025, 2 * events) / 2) / person_years * 100,
+      upper_CI = (qchisq(0.975, 2 * (events + 1)) / 2) / person_years * 100,
+      .groups = "drop"
+    )
+  
+  # Step 2: Add tertile info
+  tert_info <- validation_proteomic_UKB %>%
+    select(Proteo_NTproBNP_tertiles, NTproBNP_tertiles, ProteomicDeath23_tertiles) %>%
+    distinct()
+  
+  incidence_rates <- incidence_rates %>%
+    left_join(tert_info, by = "Proteo_NTproBNP_tertiles") %>%
+    mutate(
+      outcome = outcome_var,
+      NTproBNP_tertiles = factor(NTproBNP_tertiles),
+      ProteomicDeath23_tertiles = factor(ProteomicDeath23_tertiles),
+      y_label = rate_per100py + 0.5
+    )
+  
+  incidence_list[[i]] <- incidence_rates
+}
+
+# Combine all outcomes
+combined_incidence <- bind_rows(incidence_list)
+
+combined_incidence <- combined_incidence %>%
+  mutate(
+    outcome_label = recode(outcome,
+                           I_hf = "HF hospitalization",
+                           DEATH_CVD = "CV mortality",
+                           DEATH_OTHER = "Non-CV mortality")
+  )
+
+# Plot with facet_wrap by outcome
+p <- ggplot(combined_incidence, aes(
+  x = NTproBNP_tertiles,
+  y = rate_per100py,
+  fill = ProteomicDeath23_tertiles,
+  group = ProteomicDeath23_tertiles
+)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  geom_text(aes(y = y_label, label = sprintf("%.1f", rate_per100py)),
+            position = position_dodge(width = 0.75), size = 5) +
+  scale_fill_npg(name = "ProteomicDeath23\ntertile") +
+  facet_wrap(~ outcome_label, scales = "free_y", ncol = 2) +
+  labs(x = "NT-proBNP tertile", y = "Incidence rate (per 100 PY)") +
+  theme_bw(base_size = 20) +
+  theme(
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    axis.text.x  = element_text(size = 20),
+    axis.text.y  = element_text(size = 20),
+    strip.text   = element_text(size = 20),
+    legend.position = "right",
+    legend.title = element_text(size = 20),
+    legend.text  = element_text(size = 20)
+  )
