@@ -1,0 +1,174 @@
+###############################################################################################
+# Decision curve analysis
+###############################################################################################
+library(survival)
+library(rmda)
+library(ggplot2)
+
+pheno_MRS_PRS$outcomes_5y <- with(
+  pheno_MRS_PRS,
+  ifelse(ttoutcome <= 5 * 365.25 & outcome == 1, 1, 0)
+)
+
+model_list_dca <- list(
+  "MRS"        = outcomes_5y ~ age_y + blmale + Mortality_MRS + log_eGFR_CG_imputed + Ethnicity,
+  "PRS"        = outcomes_5y ~ age_y + blmale + PRS_HF_invnorm_z + log_eGFR_CG_imputed + Ethnicity,
+  "MAGGIC"         = outcomes_5y ~ MAGGIC_score_z + log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic"       = outcomes_5y ~ age_y + blmale + Test_Predictions_no_NTproBNP_z + log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic+MRS"         = outcomes_5y ~ age_y + blmale + Mortality_MRS + Test_Predictions_w_NTproBNP_z + PRS_HF_invnorm_z + log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic+NTproBNP"          = outcomes_5y ~ age_y + blmale + Test_Predictions_no_NTproBNP_z + NT.proBNP_clean_z + log_eGFR_CG_imputed + Ethnicity,
+  "NTproBNP"             = outcomes_5y ~ age_y + blmale + NT.proBNP_clean_z + log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic+MRS+PRS+NTproBNP"        = outcomes_5y ~ age_y + blmale + Test_Predictions_no_NTproBNP_z + Mortality_MRS + NT.proBNP_clean_z + PRS_HF_invnorm_z + log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic+MRS+PRS+NTproBNP+MAGGIC"     = outcomes_5y ~ Test_Predictions_no_NTproBNP_z + Mortality_MRS + NT.proBNP_clean_z + PRS_HF_invnorm_z + MAGGIC_score_z + log_eGFR_CG_imputed + Ethnicity
+)
+
+# Coloring
+names(model_list_dca)
+dca_cols <- model_colors[names(dca_list)]
+
+model_colors <- c(
+  "PRS"                                   = "#3B4992FF",  # navy
+  "MAGGIC"                                = "#EE0000FF",  # red
+  "MRS"                                   = "#008B45FF",  # green
+  "NTproBNP"                              = "#631879FF",  # purple-brown
+  "Proteomic"                             = "#008280FF",  # teal
+  "Proteomic+MRS"                         = "#BB0021FF",  # red
+  "Proteomic+NTproBNP"                    = "#5F559BFF",  # navy
+  "Proteomic+MRS+PRS+NTproBNP"            = "#A20056FF",  # purple-brown
+  "Proteomic+MRS+PRS+NTproBNP+MAGGIC"     = "#808180FF"   # grey
+)
+
+# Reorder colors to match the curve names
+colors_to_use <- model_colors[names(dca_list)]
+
+png(
+  filename = "file_path",
+  width = 14,
+  height = 12,
+  units = "in",
+  res = 600
+)
+
+par(
+  cex      = 1.5,
+  cex.axis = 1.4,
+  las = 1,
+  mar = c(6.5, 6, 3, 3)
+)
+
+dca_list <- lapply(names(model_list_dca), function(name) {
+  decision_curve(
+    formula   = model_list_dca[[name]],
+    data      = pheno_MRS_PRS,
+    thresholds = seq(0.00, 0.4, by = 0.05),
+    study.design = "cohort",
+    confidence.intervals = FALSE,
+    policy = "opt-in"
+  )
+})
+
+names(dca_list) <- names(model_list_dca)
+
+plot_decision_curve(
+  dca_list,
+  curve.names = names(dca_list),
+  col = colors_to_use,
+  lwd = 4,
+  standardize = FALSE,
+  confidence.intervals = FALSE,
+  legend.position = "topright",
+  xlim = c(0, 0.4),
+  cost.benefit.axis = FALSE,
+  xlab = "",
+  ylab = ""
+)
+
+# ---- redraw axis titles manually, SAME size ----
+mtext("High Risk Threshold",
+      side = 1, line = 2.5, cex = 2.3)
+
+mtext("Net Benefit",    
+      side = 2, line = 3.5, cex = 2.3, las = 0) 
+
+dev.off()
+
+# Select only MAGGIC and Full+MAGGIC for DCA
+model_list_dca_subset <- list(
+  "MAGGIC"    = outcomes_5y ~ MAGGIC_score_z + log_eGFR_CG_imputed + Ethnicity,
+  "NTproBNP"  = outcomes_5y ~ age_y + blmale + NT.proBNP_clean_z +
+                 log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic" = outcomes_5y ~ age_y + blmale + Test_Predictions_no_NTproBNP_z +
+                 log_eGFR_CG_imputed + Ethnicity,
+  "Proteomic+MRS+PRS+NTproBNP+MAGGIC" = outcomes_5y ~ Test_Predictions_no_NTproBNP_z + Mortality_MRS + NT.proBNP_clean_z + PRS_HF_invnorm_z + MAGGIC_score_z + log_eGFR_CG_imputed + Ethnicity
+)
+
+# Coloring
+library(ggsci)
+
+names(model_list_dca_subset)
+dca_cols <- model_colors[names(dca_list)]
+
+model_colors <- c(
+  "MAGGIC"        = "#EE0000FF",
+  "NTproBNP"      = "#631879FF",             
+  "Proteomic"     = "#008280FF",
+  "Proteomic+MRS+PRS+NTproBNP+MAGGIC" = "#808180FF"
+)
+
+# Reorder colors to match the curve names
+colors_to_use <- model_colors[names(dca_list)]
+
+png(
+  filename = "/home/meyrep/Projects/G_CHF/Methylation_score/figures/DCA_ACD_subset.png",
+  width = 14,
+  height = 12,
+  units = "in",
+  res = 600
+)
+
+par(
+  cex      = 1.5,
+  cex.axis = 1.4,
+  las = 1,
+  mar = c(6.5, 6, 3, 3)  # ensure space for large x-label
+)
+
+dca_list <- lapply(names(model_list_dca_subset), function(name) {
+  decision_curve(
+    formula   = model_list_dca_subset[[name]],
+    data      = pheno_MRS_PRS,
+    thresholds = seq(0.00, 0.4, by = 0.05),
+    study.design = "cohort",
+    confidence.intervals = FALSE,
+    policy = "opt-in"
+  )
+})
+
+names(dca_list) <- names(model_list_dca_subset)
+
+plot_decision_curve(
+  dca_list,
+  curve.names = names(dca_list),
+  col = colors_to_use,
+  lwd = 4,
+  standardize = FALSE,
+  confidence.intervals = FALSE,
+  legend.position = "topright",
+  xlim = c(0, 0.4),
+  cost.benefit.axis = FALSE,
+  xlab = "",
+  ylab = ""
+)
+
+# ---- redraw axis titles manually, SAME size ----
+mtext("High Risk Threshold",
+      side = 1, line = 2.5, cex = 2.3)
+
+mtext("Net Benefit",    
+      side = 2, line = 3.5, cex = 2.3, las = 0) 
+
+dev.off()
+
+###############################################################################################
+# END
+###############################################################################################
