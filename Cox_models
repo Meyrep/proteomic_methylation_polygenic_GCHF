@@ -1,0 +1,139 @@
+###############################################################################################
+# Cox models – All outcomes
+###############################################################################################
+
+outcomes <- list(
+  "All-cause mortality"       = c("ttdth", "evdth"),
+  "Heart failure hospitalization" = c("tthfhosp", "evhfhosp"),
+  "Cardiovascular mortality"  = c("ttcvdth", "evcvdth"),
+  "Non-cardiovascular mortality" = c("ttdth", "evncvdth")
+)
+
+cox_models <- list(
+  MAGGIC               = NULL,
+  Mortality_MRS        = NULL,
+  Mortality_PRS        = NULL,
+  Cardiomyopathy_PRS   = NULL,
+  Heart_failure_PRS    = NULL,
+  Composite_CVD_PRS    = NULL,
+  NTproBNP             = NULL,
+  ProteomicDeath23     = NULL
+)
+
+vars_of_interest <- c(
+  MAGGIC               = "MAGGIC_score_z",
+  Mortality_MRS        = "Mortality_MRS",
+  Mortality_PRS        = "SCORESUM_invnorm_z",
+  Cardiomyopathy_PRS   = "PRS_CM_invnorm_z",
+  Heart_failure_PRS    = "PRS_HF_invnorm_z",
+  Composite_CVD_PRS    = "PRS_CVD_invnorm_z",
+  NTproBNP             = "NT.proBNP_clean_z",
+  ProteomicDeath23     = "Test_Predictions_no_NTproBNP_z"
+)
+
+extract_hr_ci <- function(model, var, model_name, outcome_name) {
+  s <- summary(model)
+  
+  if (!var %in% rownames(s$coef)) return(NULL)
+  
+  beta <- s$coef[var, "coef"]
+  se   <- s$coef[var, "se(coef)"]
+  
+  data.frame(
+    Outcome  = outcome_name,
+    Model     = model_name,
+    HR        = exp(beta),
+    CI_lower  = exp(beta - 1.96 * se),
+    CI_upper  = exp(beta + 1.96 * se)
+  )
+}
+
+# Initialize dataframe to store all results
+df_all <- data.frame()
+
+# Loop over outcomes
+for(outcome_name in names(outcomes)) {
+  time_var <- outcomes[[outcome_name]][1]
+  event_var <- outcomes[[outcome_name]][2]
+  
+  # Fit each Cox model for this outcome
+  for(model_name in names(vars_of_interest)) {
+    formula_text <- paste0(
+      "Surv(", time_var, ", ", event_var, ") ~ ",
+      ifelse(model_name == "MAGGIC", vars_of_interest[model_name],
+             paste("age_y + blmale +", vars_of_interest[model_name])),
+      " + log_eGFR_CG_imputed + strata(Ethnicity)"
+    )
+    
+    model <- coxph(as.formula(formula_text), data = pheno_MRS_PRS)
+    
+    # Extract HR and append
+    df_all <- rbind(df_all, extract_hr_ci(model, vars_of_interest[model_name], model_name, outcome_name))
+  }
+}
+
+# Set factor order for plotting
+df_all$Model <- factor(df_all$Model,
+                       levels = c("MAGGIC", "Mortality_MRS", "Mortality_PRS", 
+                                  "Cardiomyopathy_PRS", "Heart_failure_PRS", 
+                                  "Composite_CVD_PRS", "NTproBNP", "ProteomicDeath23"))
+
+# Set factor order for plotting of the Outcomes
+df_all$Outcome <- factor(df_all$Outcome,
+                       levels = c("All-cause mortality", "Heart failure hospitalization", "Cardiovascular mortality", 
+                                  "Non-cardiovascular mortality"))
+
+# Create a factor with readable names (for parsing as expressions)
+df_all <- df_all %>%
+  mutate(Model_plot = factor(Model, levels = c(
+    "MAGGIC",
+    "Mortality_MRS",
+    "Mortality_PRS",
+    "Cardiomyopathy_PRS",
+    "Heart_failure_PRS",
+    "Composite_CVD_PRS",
+    "NTproBNP",
+    "ProteomicDeath23"
+  )))
+
+# Corresponding labels as plotmath expressions
+model_labels <- c(
+  "\"MAGGIC score\"",
+  "MRS[Mortality]",
+  "PRS[Mortality]",
+  "PRS[CM]",
+  "PRS[HF]",
+  "PRS[metaCVD]",
+  "\"NT-proBNP\"",
+  "\"ProteomicDeath23\""
+)
+
+# Plot
+p <- ggplot(df_all, aes(x = Model_plot, y = HR, ymin = CI_lower, ymax = CI_upper, color = Model_plot)) +
+  geom_hline(yintercept = 1.0, linetype = "solid", color = "grey") +
+  geom_linerange(position = position_dodge(width = 0.8), size = 1.0) +
+  geom_point(position = position_dodge(width = 0.8), size = 6) +
+  scale_color_npg() +
+  scale_x_discrete(labels = parse(text = model_labels)) +
+  scale_y_continuous(
+    limits = c(0.5, 3.0),
+    breaks = seq(0.5, 3.0, by = 0.5),
+    expand = expansion(add = c(0, 0.1))
+  ) +
+  facet_wrap(~Outcome, ncol = 1, scales = "free_y") +
+  theme_bw(base_size = 20) +
+  theme(
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 20),
+    axis.text.y  = element_text(size = 20),
+    legend.position = "none"
+  ) +
+  labs(
+    x = "",
+    y = "Hazard ratio (95% CI) per 1 SD"
+  )
+
+###############################################################################################
+# END
+###############################################################################################
