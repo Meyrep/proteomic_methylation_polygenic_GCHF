@@ -1,0 +1,37 @@
+###############################################################################################
+# NRI/IDI
+###############################################################################################
+library(survival)
+library(survIDINRI)
+
+#-----------------------------------------
+# 1) Prepare data
+#-----------------------------------------
+# Subset numeric covariates for base and new model
+covs_base <- as.matrix(pheno_MRS_PRS[, c("MAGGIC_score_z", "NT.proBNP_clean_z")])
+covs_new <- as.matrix(pheno_MRS_PRS[, c("Test_Predictions_no_NTproBNP_z", "MAGGIC_score_z", "NT.proBNP_clean_z")])
+covs_new <- as.matrix(pheno_MRS_PRS[, c("Test_Predictions_no_NTproBNP_z", "MAGGIC_score_z", "NT.proBNP_clean_z", "PRS_CVD_invnorm_z", "Mortality_MRS")])
+
+# Event/time matrix: column 1 = time, column 2 = event
+time_event <- as.matrix(pheno_MRS_PRS[, c("ttoutcome", "outcome")])
+valid_idx <- complete.cases(time_event, covs_base, covs_new)
+covs_base  <- covs_base[valid_idx, , drop = FALSE]
+covs_new   <- covs_new[valid_idx, , drop = FALSE]
+time_event <- time_event[valid_idx, , drop = FALSE]
+
+t0 <- 1 * 365.25  # 1-year horizon
+t0 <- 3 * 365.25  # 3-year horizon
+
+#-----------------------------------------
+# 2) Compute IDI/NRI
+#-----------------------------------------
+res <- IDI.INF(time_event, covs0 = covs_base, covs1 = covs_new, t0 = t0, npert = 300)
+
+#-----------------------------------------
+# 3) Inspect results
+#-----------------------------------------
+IDI.INF.OUT(res)
+
+###############################################################################################
+# END
+###############################################################################################
