@@ -1,0 +1,111 @@
+###############################################################################################
+# Calibration
+###############################################################################################
+library(survival)
+library(dplyr)
+library(ggplot2)
+
+dat <- pheno_MRS_PRS %>%
+  dplyr::select(ttoutome, outcome, Test_Predictions_no_NTproBNP_z) %>%
+  na.omit() %>%
+  mutate(score = as.numeric(Test_Predictions_no_NTproBNP_z))
+
+cox_model <- coxph(Surv(ttdth, evdth) ~ score, data = dat)
+
+# Linear predictor (LP)
+dat$lp <- predict(cox_model, type = "lp")
+
+# -----------------------------
+# Calibration slope
+# -----------------------------
+fit_slope <- coxph(Surv(ttdth, evdth) ~ lp, data = dat)
+slope_ci <- confint(fit_slope)
+cal_slope <- data.frame(
+  slope = coef(fit_slope)[1],
+  lower = slope_ci[1],
+  upper = slope_ci[2]
+)
+
+# -----------------------------
+# Predicted survival at a fixed horizon
+# -----------------------------
+t0 <- 5 * 365.25
+
+# Baseline survival at t0 using mean score
+newdata_mean <- data.frame(score = mean(dat$score))
+S0_t0 <- summary(survfit(cox_model, newdata = newdata_mean), times = t0)$surv
+
+# Individual predicted survival & risk
+dat <- dat %>%
+  mutate(
+    pred_surv = S0_t0 ^ exp(lp),
+    pred_risk = 1 - pred_surv
+  )
+
+# -----------------------------
+# Deciles of predicted risk
+# -----------------------------
+n_groups <- 10
+dat$decile <- cut(
+  dat$pred_risk,
+  breaks = quantile(dat$pred_risk, probs = seq(0, 1, length = n_groups + 1), na.rm = TRUE),
+  include.lowest = TRUE
+)
+
+# -----------------------------
+# KM-estimated observed risk per decile
+# -----------------------------
+km_by_group <- dat %>%
+  group_by(decile) %>%
+  do({
+    sf <- survfit(Surv(ttdth, evdth) ~ 1, data = .)
+    ssum <- summary(sf, times = t0)
+    
+    data.frame(
+      obs_surv  = ifelse(length(ssum$surv) == 0, tail(ssum$surv,1), ssum$surv),
+      std_err   = ifelse(length(ssum$std.err) == 0, NA, ssum$std.err),
+      pred_risk = mean(.$pred_risk)
+    )
+  })
+
+cal_deciles <- km_by_group %>%
+  mutate(
+    obs_risk = 1 - obs_surv,
+    lower = 1 - (obs_surv + std_err),
+    upper = 1 - (obs_surv - std_err)
+  )
+
+# -----------------------------
+# Approximate calibration line
+# -----------------------------
+cal_line <- lm(obs_risk ~ pred_risk, data = cal_deciles)
+ci_line <- confint(cal_line)
+intercept_est <- coef(cal_line)[1]
+slope_est     <- coef(cal_line)[2]
+intercept_lower <- ci_line[1,1]; intercept_upper <- ci_line[1,2]
+slope_lower     <- ci_line[2,1]; slope_upper     <- ci_line[2,2]
+
+# -----------------------------
+# Plot calibration
+# -----------------------------
+p_calib <- ggplot(cal_deciles, aes(x = pred_risk, y = obs_risk)) +
+  geom_smooth(method = "loess", se = TRUE, color = "black", linewidth = 1) +
+  geom_point(color = "grey45", size = 3) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.02, color = "grey45") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = "blue", linewidth = 0.8) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  labs(x = "Predicted risk", y = "Observed risk") +
+  theme_bw(base_size = 14) +
+  annotate("text", x = 0, y = 1.0, hjust = 0, vjust = 1, size = 4,
+           label = paste0(
+             "Calibration-in-the-large (intercept): ", round(intercept_est, 2),
+             " (", round(intercept_lower, 2), "-", round(intercept_upper, 2), ")\n",
+             "Calibration slope: ", round(cal_slope$slope, 2),
+             " (", round(cal_slope$lower, 2), "-", round(cal_slope$upper, 2), ")"
+           ))
+
+###############################################################################################
+# END
+###############################################################################################
