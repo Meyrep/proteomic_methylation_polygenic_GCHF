@@ -1,0 +1,198 @@
+###############################################################################################
+# Calculation of c-index
+###############################################################################################
+
+library(ggplot2)
+library(dplyr)
+library(survival)
+library(boot)
+
+# Define outcomes and time variables
+outcomes <- c("evhfhosp", "evdth", "evcvdth", "evncvdth")
+times    <- c("tthfhosp", "ttdth", "ttcvdth", "ttdth")
+labels   <- c("HF hospitalization", "All-cause mortality", "CV mortality", "Non-CV mortality")
+
+#outcomes <- c("evdth")
+#times    <- c("ttdth")
+#labels   <- c("All-cause mortality")
+
+# List of model formulas
+model_list <- list(
+  Mortality_MRS = ~ age_y + blmale + Mortality_MRS +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  HF_PRS = ~ age_y + blmale + PRS_HF_invnorm_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  MAGGIC_score = ~ MAGGIC_score_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  ProteoRS_no_NT = ~ age_y + blmale + Test_Predictions_no_NTproBNP_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  ProteoRS_MRS = ~ age_y + blmale + Mortality_MRS +
+    Test_Predictions_w_NTproBNP_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  ProteoRS_NT = ~ age_y + blmale + Test_Predictions_no_NTproBNP_z +
+    NT.proBNP_clean_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  NTproBNP = ~ age_y + blmale + NT.proBNP_clean_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  Full_combined = ~ age_y + blmale +
+    Test_Predictions_no_NTproBNP_z +
+    Mortality_MRS +
+    NT.proBNP_clean_z +
+    PRS_HF_invnorm_z +
+    log_eGFR_CG_imputed + strata(Ethnicity),
+
+  Full_with_MAGGIC = ~ Test_Predictions_no_NTproBNP_z +
+    Mortality_MRS +
+    NT.proBNP_clean_z +
+    PRS_HF_invnorm_z +
+    MAGGIC_score_z +
+    log_eGFR_CG_imputed + strata(Ethnicity)
+)
+
+# Function to compute C-index + bootstrap CI
+compute_cindex <- function(surv_formula, rhs_formula, data) {
+
+  full_formula <- update(surv_formula, rhs_formula)
+
+  # Complete-case dataset
+  vars_needed <- all.vars(full_formula)
+  df_cc <- data[complete.cases(data[, vars_needed]), vars_needed]
+
+  # Fit model
+  fit <- coxph(full_formula, data = df_cc)
+  c_index <- summary(fit)$concordance["C"]
+
+  # Bootstrap function
+  boot_fun <- function(data, indices) {
+    d <- data[indices, ]
+    fit <- tryCatch(
+      coxph(full_formula, data = d),
+      error = function(e) NULL
+    )
+    if (is.null(fit)) return(NA)
+    summary(fit)$concordance["C"]
+  }
+
+set.seed(123)
+  boot_res <- boot(df_cc, boot_fun, R = 1000)
+
+  ci <- tryCatch(
+    boot.ci(boot_res, type = "bca"),
+    error = function(e) NULL
+  )
+
+  data.frame(
+    C_index  = c_index,
+    CI_lower = if (!is.null(ci)) ci$bca[4] else NA,
+    CI_upper = if (!is.null(ci)) ci$bca[5] else NA
+  )
+}
+
+# Run models
+results <- list()
+
+for (i in seq_along(outcomes)) {
+
+  surv_lhs <- as.formula(
+    paste0("Surv(", times[i], ", ", outcomes[i], ") ~ 1")
+  )
+
+  for (model_name in names(model_list)) {
+
+    res <- compute_cindex(
+      surv_formula = surv_lhs,
+      rhs_formula  = model_list[[model_name]],
+      data         = pheno_MRS_PRS
+    )
+
+    results[[paste0(labels[i], "_", model_name)]] <-
+      cbind(
+        Outcome = labels[i],
+        Model   = model_name,
+        res
+      )
+  }
+}
+
+# Final results table
+df_cindex <- bind_rows(results)
+
+library(dplyr)
+
+df_cindex <- df_cindex %>%
+  mutate(Model = recode(Model,
+    "MAGGIC_score"      = "MAGGIC",
+    "Mortality_MRS"     = "MRS",
+    "HF_PRS"            = "PRS",
+    "NTproBNP"          = "NTproBNP",
+    "ProteoRS_no_NT"    = "Proteomic",
+    "ProteoRS_MRS"      = "Proteomic+MRS",
+    "ProteoRS_NT"       = "Proteomic+NTproBNP",
+    "Full_combined"     = "Proteomic+MRS+PRS+NTproBNP",
+    "Full_with_MAGGIC"  = "Proteomic+MRS+PRS+NTproBNP+MAGGIC"
+  ))
+
+# Set desired factor order for the 'Variable' column
+variable_levels <- c(
+  "PRS",
+  "MAGGIC",
+  "MRS",
+  "NTproBNP",
+  "Proteomic",
+  "Proteomic+MRS",
+  "Proteomic+NTproBNP",
+  "Proteomic+MRS+PRS+NTproBNP",
+  "Proteomic+MRS+PRS+NTproBNP+MAGGIC"
+)
+
+# Apply factor ordering
+df_cindex <- df_cindex %>%
+  mutate(Model = factor(Model, levels = variable_levels))
+
+# Optional: Factor ordering for outcome
+df_cindex <- df_cindex %>%
+  mutate(Outcome = factor(Outcome, levels = c(
+    "All-cause mortality",
+    "HF hospitalization",
+    "CV mortality",
+    "Non-CV mortality"
+  )))
+
+# Plot with facets, no x-axis labels, legend on the right
+library("ggsci")
+
+combined_plot <- ggplot(df_cindex, aes(x = Model, y = C_index, color = Model)) +
+  geom_point(size = 9) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.3) +
+  labs(x = "", y = "C-index (95% CI)", color = "Model") +
+  facet_wrap(~ Outcome) +
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 30),
+    axis.text.y = element_text(size = 30),
+    axis.text.x = element_text(
+      size = 30,
+      angle = 45,
+      vjust = 1,
+      hjust = 1
+    ),
+    strip.text = element_text(size = 30),
+    legend.title = element_text(size = 20),
+    legend.text = element_text(size = 20),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0.50, 0.85), breaks = seq(0.50, 0.85, 0.05)) +
+  scale_color_npg()
+
+###############################################################################################
+# END
+###############################################################################################
